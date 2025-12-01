@@ -24,6 +24,7 @@ export const onRequestGet = async (context: { env: Env; request: Request }) => {
     const { env, request } = context;
     const url = new URL(request.url);
     const checkAuth = url.searchParams.get('checkAuth');
+    const getConfig = url.searchParams.get('getConfig');
     
     // 如果是检查认证请求，返回是否设置了密码
     if (checkAuth === 'true') {
@@ -32,6 +33,38 @@ export const onRequestGet = async (context: { env: Env; request: Request }) => {
         hasPassword: !!serverPassword,
         requiresAuth: !!serverPassword 
       }), {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      });
+    }
+    
+    // 如果是获取配置请求
+    if (getConfig === 'ai') {
+      const aiConfig = await env.CLOUDNAV_KV.get('ai_config');
+      return new Response(aiConfig || '{}', {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      });
+    }
+    
+    // 如果是获取图标请求
+    if (getConfig === 'favicon') {
+      const domain = url.searchParams.get('domain');
+      if (!domain) {
+        return new Response(JSON.stringify({ error: 'Domain parameter is required' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        });
+      }
+      
+      // 从KV中获取缓存的图标
+      const cachedIcon = await env.CLOUDNAV_KV.get(`favicon:${domain}`);
+      if (cachedIcon) {
+        return new Response(JSON.stringify({ icon: cachedIcon, cached: true }), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        });
+      }
+      
+      // 如果没有缓存，返回空结果
+      return new Response(JSON.stringify({ icon: null, cached: false }), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
     }
@@ -84,6 +117,31 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
     
     // 如果只是验证密码，不更新数据
     if (body.authOnly) {
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      });
+    }
+    
+    // 如果是保存AI配置
+    if (body.saveConfig === 'ai') {
+      await env.CLOUDNAV_KV.put('ai_config', JSON.stringify(body.config));
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      });
+    }
+    
+    // 如果是保存图标
+    if (body.saveConfig === 'favicon') {
+      const { domain, icon } = body;
+      if (!domain || !icon) {
+        return new Response(JSON.stringify({ error: 'Domain and icon are required' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        });
+      }
+      
+      // 保存图标到KV，设置过期时间为30天
+      await env.CLOUDNAV_KV.put(`favicon:${domain}`, icon, { expirationTtl: 30 * 24 * 60 * 60 });
       return new Response(JSON.stringify({ success: true }), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
