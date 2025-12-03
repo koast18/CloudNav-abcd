@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Cloud, Download, Upload, CheckCircle2, AlertCircle, RefreshCw, Save } from 'lucide-react';
-import { Category, LinkItem, WebDavConfig } from '../types';
+import { Category, LinkItem, WebDavConfig, SearchConfig, AIConfig } from '../types';
 import { checkWebDavConnection, uploadBackup, downloadBackup } from '../services/webDavService';
 import { generateBookmarkHtml, downloadHtmlFile } from '../services/exportService';
 
@@ -12,10 +12,14 @@ interface BackupModalProps {
   onRestore: (links: LinkItem[], categories: Category[]) => void;
   webDavConfig: WebDavConfig;
   onSaveWebDavConfig: (config: WebDavConfig) => void;
+  searchConfig: SearchConfig;
+  onRestoreSearchConfig: (searchConfig: SearchConfig) => void;
+  aiConfig: AIConfig;
+  onRestoreAIConfig: (aiConfig: AIConfig) => void;
 }
 
 const BackupModal: React.FC<BackupModalProps> = ({ 
-  isOpen, onClose, links, categories, onRestore, webDavConfig, onSaveWebDavConfig 
+  isOpen, onClose, links, categories, onRestore, webDavConfig, onSaveWebDavConfig, searchConfig, onRestoreSearchConfig, aiConfig, onRestoreAIConfig 
 }) => {
   const [config, setConfig] = useState<WebDavConfig>(webDavConfig);
   const [isTesting, setIsTesting] = useState(false);
@@ -50,7 +54,7 @@ const BackupModal: React.FC<BackupModalProps> = ({
   const handleBackupToCloud = async () => {
     setSyncStatus('uploading');
     setStatusMsg('正在上传...');
-    const success = await uploadBackup(config, { links, categories });
+    const success = await uploadBackup(config, { links, categories, searchConfig, aiConfig });
     if (success) {
         setSyncStatus('success');
         setStatusMsg('备份成功！');
@@ -69,6 +73,14 @@ const BackupModal: React.FC<BackupModalProps> = ({
     
     if (data) {
         onRestore(data.links, data.categories);
+        // 恢复搜索配置（如果存在）
+        if (data.searchConfig) {
+            onRestoreSearchConfig(data.searchConfig);
+        }
+        // 恢复AI配置（如果存在）
+        if (data.aiConfig) {
+            onRestoreAIConfig(data.aiConfig);
+        }
         setSyncStatus('success');
         setStatusMsg('恢复成功！');
     } else {
@@ -84,7 +96,7 @@ const BackupModal: React.FC<BackupModalProps> = ({
   };
 
   const handleExportJson = () => {
-    const data = { links, categories };
+    const data = { links, categories, searchConfig, aiConfig };
     const json = JSON.stringify(data, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);

@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Search, Plus, Upload, Moon, Sun, Menu, 
   Trash2, Edit2, Loader2, Cloud, CheckCircle2, AlertCircle,
-  Pin, Settings, Lock, CloudCog, Github, GitFork, GripVertical, Save, CheckSquare, LogOut
+  Pin, Settings, Lock, CloudCog, Github, GitFork, GripVertical, Save, CheckSquare, LogOut, ExternalLink
 } from 'lucide-react';
 import {
   DndContext,
@@ -24,7 +24,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { LinkItem, Category, DEFAULT_CATEGORIES, INITIAL_LINKS, WebDavConfig, AIConfig } from './types';
+import { LinkItem, Category, DEFAULT_CATEGORIES, INITIAL_LINKS, WebDavConfig, AIConfig, SearchMode, ExternalSearchSource, SearchConfig } from './types';
 import { parseBookmarks } from './services/bookmarkParser';
 import Icon from './components/Icon';
 import LinkModal from './components/LinkModal';
@@ -34,6 +34,7 @@ import BackupModal from './components/BackupModal';
 import CategoryAuthModal from './components/CategoryAuthModal';
 import ImportModal from './components/ImportModal';
 import SettingsModal from './components/SettingsModal';
+import SearchConfigModal from './components/SearchConfigModal';
 import ContextMenu from './components/ContextMenu';
 import QRCodeModal from './components/QRCodeModal';
 
@@ -45,6 +46,7 @@ const LOCAL_STORAGE_KEY = 'cloudnav_data_cache';
 const AUTH_KEY = 'cloudnav_auth_token';
 const WEBDAV_CONFIG_KEY = 'cloudnav_webdav_config';
 const AI_CONFIG_KEY = 'cloudnav_ai_config';
+const SEARCH_CONFIG_KEY = 'cloudnav_search_config';
 
 function App() {
   // --- State ---
@@ -54,6 +56,11 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [darkMode, setDarkMode] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  
+  // Search Mode State
+  const [searchMode, setSearchMode] = useState<SearchMode>('internal');
+  const [externalSearchSources, setExternalSearchSources] = useState<ExternalSearchSource[]>([]);
+  const [isLoadingSearchConfig, setIsLoadingSearchConfig] = useState(true);
   
   // Category Security State
   const [unlockedCategoryIds, setUnlockedCategoryIds] = useState<Set<string>>(new Set());
@@ -91,6 +98,7 @@ function App() {
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isSearchConfigModalOpen, setIsSearchConfigModalOpen] = useState(false);
   const [catAuthModalData, setCatAuthModalData] = useState<Category | null>(null);
   
   const [editingLink, setEditingLink] = useState<LinkItem | undefined>(undefined);
@@ -471,6 +479,7 @@ function App() {
         }
         
         // 获取数据
+        let hasCloudData = false;
         try {
             const res = await fetch('/api/storage');
             if (res.ok) {
@@ -482,30 +491,309 @@ function App() {
                     
                     // 加载链接图标缓存
                     loadLinkIcons(data.links);
-                    
-                    // 同时获取AI配置
-                    try {
-                        const aiConfigRes = await fetch('/api/storage?getConfig=ai');
-                        if (aiConfigRes.ok) {
-                            const aiConfigData = await aiConfigRes.json();
-                            if (aiConfigData && Object.keys(aiConfigData).length > 0) {
-                                setAiConfig(aiConfigData);
-                                localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(aiConfigData));
-                            }
-                        }
-                    } catch (e) {
-                        console.warn("Failed to fetch AI config during init.", e);
-                    }
-                    
-                    setIsCheckingAuth(false);
-                    return;
+                    hasCloudData = true;
                 }
             } 
         } catch (e) {
             console.warn("Failed to fetch from cloud, falling back to local.", e);
         }
         
+        // 无论是否有云端数据，都尝试从KV空间加载搜索配置
+        try {
+            const searchConfigRes = await fetch('/api/storage?getConfig=search');
+            if (searchConfigRes.ok) {
+                const searchConfigData = await searchConfigRes.json();
+                if (searchConfigData && Object.keys(searchConfigData).length > 0) {
+                    setSearchMode(searchConfigData.mode || 'internal');
+                    setExternalSearchSources(searchConfigData.externalSources || []);
+                    localStorage.setItem(SEARCH_CONFIG_KEY, JSON.stringify(searchConfigData));
+                }
+            }
+        } catch (e) {
+            console.warn("Failed to fetch search config from KV.", e);
+        }
+        
+        // 如果有云端数据，则不需要加载本地数据
+        if (hasCloudData) {
+            setIsCheckingAuth(false);
+            return;
+        }
+        
+        // 如果没有云端数据，则加载本地数据
         loadFromLocal();
+        
+        // 如果从KV空间加载搜索配置失败，回退到localStorage
+        try {
+            const saved = localStorage.getItem(SEARCH_CONFIG_KEY);
+            if (saved) {
+                const config = JSON.parse(saved);
+                setSearchMode(config.mode || 'internal');
+                
+                // 如果已保存的搜索源配置存在，直接使用
+                if (config.externalSources) {
+                    setExternalSearchSources(config.externalSources);
+                } else {
+                    // 如果没有外部搜索源配置，使用默认配置
+                    setExternalSearchSources([
+                        {
+                            id: 'bing',
+                            name: '必应',
+                            url: 'https://www.bing.com/search?q={query}',
+                            icon: 'Search',
+                            enabled: true,
+                            createdAt: Date.now()
+                        },
+                        {
+                            id: 'google',
+                            name: 'Google',
+                            url: 'https://www.google.com/search?q={query}',
+                            icon: 'Search',
+                            enabled: true,
+                            createdAt: Date.now()
+                        },
+                        {
+                            id: 'baidu',
+                            name: '百度',
+                            url: 'https://www.baidu.com/s?wd={query}',
+                            icon: 'Globe',
+                            enabled: true,
+                            createdAt: Date.now()
+                        },
+                        {
+                            id: 'sogou',
+                            name: '搜狗',
+                            url: 'https://www.sogou.com/web?query={query}',
+                            icon: 'Globe',
+                            enabled: true,
+                            createdAt: Date.now()
+                        },
+                        {
+                            id: 'yandex',
+                            name: 'Yandex',
+                            url: 'https://yandex.com/search/?text={query}',
+                            icon: 'Globe',
+                            enabled: true,
+                            createdAt: Date.now()
+                        },
+                        {
+                            id: 'github',
+                            name: 'GitHub',
+                            url: 'https://github.com/search?q={query}',
+                            icon: 'Github',
+                            enabled: true,
+                            createdAt: Date.now()
+                        },
+                        {
+                            id: 'linuxdo',
+                            name: 'Linux.do',
+                            url: 'https://linux.do/search?q={query}',
+                            icon: 'Terminal',
+                            enabled: true,
+                            createdAt: Date.now()
+                        },
+                        {
+                         id: 'bilibili',
+                         name: 'B站',
+                         url: 'https://search.bilibili.com/all?keyword={query}',
+                         icon: 'Play',
+                         enabled: true,
+                         createdAt: Date.now()
+                     },
+                        {
+                            id: 'youtube',
+                            name: 'YouTube',
+                            url: 'https://www.youtube.com/results?search_query={query}',
+                            icon: 'Video',
+                            enabled: true,
+                            createdAt: Date.now()
+                        },
+                        {
+                         id: 'wikipedia',
+                         name: '维基',
+                         url: 'https://zh.wikipedia.org/wiki/Special:Search?search={query}',
+                         icon: 'BookOpen',
+                         enabled: true,
+                         createdAt: Date.now()
+                     }
+                    ]);
+                }
+            } else {
+                // 如果没有保存的配置，使用默认配置
+                setSearchMode('internal');
+                setExternalSearchSources([
+                  {
+                        id: 'bing',
+                        name: '必应',
+                        url: 'https://www.bing.com/search?q={query}',
+                        icon: 'Search',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },  
+                  {
+                        id: 'google',
+                        name: 'Google',
+                        url: 'https://www.google.com/search?q={query}',
+                        icon: 'Search',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    
+                    {
+                        id: 'baidu',
+                        name: '百度',
+                        url: 'https://www.baidu.com/s?wd={query}',
+                        icon: 'Globe',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'sogou',
+                        name: '搜狗',
+                        url: 'https://www.sogou.com/web?query={query}',
+                        icon: 'Globe',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'yandex',
+                        name: 'Yandex',
+                        url: 'https://yandex.com/search/?text={query}',
+                        icon: 'Globe',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'github',
+                        name: 'GitHub',
+                        url: 'https://github.com/search?q={query}',
+                        icon: 'Github',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'linuxdo',
+                        name: 'Linux.do',
+                        url: 'https://linux.do/search?q={query}',
+                        icon: 'Terminal',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'bilibili',
+                        name: 'B站',
+                        url: 'https://search.bilibili.com/all?keyword={query}',
+                        icon: 'Play',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'youtube',
+                        name: 'YouTube',
+                        url: 'https://www.youtube.com/results?search_query={query}',
+                        icon: 'Video',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'wikipedia',
+                        name: '维基',
+                        url: 'https://zh.wikipedia.org/wiki/Special:Search?search={query}',
+                        icon: 'BookOpen',
+                        enabled: true,
+                        createdAt: Date.now()
+                    }
+                ]);
+            }
+        } catch (e) {
+            console.warn("Failed to load search config from localStorage.", e);
+            // 如果加载失败，使用默认配置
+                setSearchMode('internal');
+                setExternalSearchSources([
+                  {
+                        id: 'bing',
+                        name: '必应',
+                        url: 'https://www.bing.com/search?q={query}',
+                        icon: 'Search',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },  
+                  {
+                        id: 'google',
+                        name: 'Google',
+                        url: 'https://www.google.com/search?q={query}',
+                        icon: 'Search',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    
+                    {
+                        id: 'baidu',
+                        name: '百度',
+                        url: 'https://www.baidu.com/s?wd={query}',
+                        icon: 'Globe',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'sogou',
+                        name: '搜狗',
+                        url: 'https://www.sogou.com/web?query={query}',
+                        icon: 'Globe',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'yandex',
+                        name: 'Yandex',
+                        url: 'https://yandex.com/search/?text={query}',
+                        icon: 'Globe',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'github',
+                        name: 'GitHub',
+                        url: 'https://github.com/search?q={query}',
+                        icon: 'Github',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'linuxdo',
+                        name: 'Linux.do',
+                        url: 'https://linux.do/search?q={query}',
+                        icon: 'Terminal',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'bilibili',
+                        name: 'B站',
+                        url: 'https://search.bilibili.com/all?keyword={query}',
+                        icon: 'Play',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'youtube',
+                        name: 'YouTube',
+                        url: 'https://www.youtube.com/results?search_query={query}',
+                        icon: 'Video',
+                        enabled: true,
+                        createdAt: Date.now()
+                    },
+                    {
+                        id: 'wikipedia',
+                        name: '维基',
+                        url: 'https://zh.wikipedia.org/wiki/Special:Search?search={query}',
+                        icon: 'BookOpen',
+                        enabled: true,
+                        createdAt: Date.now()
+                    }
+                ]);
+        }
+        
+        setIsLoadingSearchConfig(false);
         setIsCheckingAuth(false);
     };
 
@@ -979,6 +1267,34 @@ function App() {
       }
   };
 
+  const handleRestoreAIConfig = async (config: AIConfig) => {
+      setAiConfig(config);
+      localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(config));
+      
+      // 同时保存到KV空间
+      if (authToken) {
+          try {
+              const response = await fetch('/api/storage', {
+                  method: 'POST',
+                  headers: {
+                      'Content-Type': 'application/json',
+                      'x-auth-password': authToken
+                  },
+                  body: JSON.stringify({
+                      saveConfig: 'ai',
+                      config: config
+                  })
+              });
+              
+              if (!response.ok) {
+                  console.error('Failed to restore AI config to KV:', response.statusText);
+              }
+          } catch (error) {
+              console.error('Error restoring AI config to KV:', error);
+          }
+      }
+  };
+
   // --- Category Management & Security ---
 
   const handleCategoryClick = (cat: Category) => {
@@ -1034,9 +1350,304 @@ function App() {
       localStorage.setItem(WEBDAV_CONFIG_KEY, JSON.stringify(config));
   };
 
+  // 搜索源选择弹出窗口状态
+  const [showSearchSourcePopup, setShowSearchSourcePopup] = useState(false);
+  const [hoveredSearchSource, setHoveredSearchSource] = useState<ExternalSearchSource | null>(null);
+  const [selectedSearchSource, setSelectedSearchSource] = useState<ExternalSearchSource | null>(null);
+  const [isIconHovered, setIsIconHovered] = useState(false);
+  const [isPopupHovered, setIsPopupHovered] = useState(false);
+  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 处理弹出窗口显示/隐藏逻辑
+  useEffect(() => {
+    if (isIconHovered || isPopupHovered) {
+      // 如果图标或弹出窗口被悬停，清除隐藏定时器并显示弹出窗口
+      if (hideTimeoutRef.current) {
+        clearTimeout(hideTimeoutRef.current);
+        hideTimeoutRef.current = null;
+      }
+      setShowSearchSourcePopup(true);
+    } else {
+      // 如果图标和弹出窗口都没有被悬停，设置一个延迟隐藏弹出窗口
+      if (hideTimeoutRef.current) {
+        clearTimeout(hideTimeoutRef.current);
+      }
+      hideTimeoutRef.current = setTimeout(() => {
+        setShowSearchSourcePopup(false);
+        setHoveredSearchSource(null);
+      }, 100);
+    }
+    
+    // 清理函数
+    return () => {
+      if (hideTimeoutRef.current) {
+        clearTimeout(hideTimeoutRef.current);
+      }
+    };
+  }, [isIconHovered, isPopupHovered]);
+
+  // 处理搜索源选择
+  const handleSearchSourceSelect = (source: ExternalSearchSource) => {
+    // 更新选中的搜索源
+    setSelectedSearchSource(source);
+    
+    if (searchQuery.trim()) {
+      const searchUrl = source.url.replace('{query}', encodeURIComponent(searchQuery));
+      window.open(searchUrl, '_blank');
+    }
+    setShowSearchSourcePopup(false);
+    setHoveredSearchSource(null);
+  };
+
+  // --- Search Config ---
+  const handleSaveSearchConfig = async (sources: ExternalSearchSource[], mode: SearchMode) => {
+      const searchConfig: SearchConfig = {
+          mode,
+          externalSources: sources
+      };
+      
+      setExternalSearchSources(sources);
+      setSearchMode(mode);
+      localStorage.setItem(SEARCH_CONFIG_KEY, JSON.stringify(searchConfig));
+      
+      // 同时保存到KV空间
+      if (authToken) {
+          try {
+              const response = await fetch('/api/storage', {
+                  method: 'POST',
+                  headers: {
+                      'Content-Type': 'application/json',
+                      'x-auth-password': authToken
+                  },
+                  body: JSON.stringify({
+                      saveConfig: 'search',
+                      config: searchConfig
+                  })
+              });
+              
+              if (!response.ok) {
+                  console.error('Failed to save search config to KV:', response.statusText);
+              }
+          } catch (error) {
+              console.error('Error saving search config to KV:', error);
+          }
+      }
+  };
+
+  const handleSearchModeChange = (mode: SearchMode) => {
+      setSearchMode(mode);
+      
+      // 如果切换到外部搜索模式且搜索源列表为空，自动加载默认搜索源
+      if (mode === 'external' && externalSearchSources.length === 0) {
+          const defaultSources: ExternalSearchSource[] = [
+              {
+                  id: 'bing',
+                  name: '必应',
+                  url: 'https://www.bing.com/search?q={query}',
+                  icon: 'Search',
+                  enabled: true,
+                  createdAt: Date.now()
+              },
+              {
+                  id: 'google',
+                  name: 'Google',
+                  url: 'https://www.google.com/search?q={query}',
+                  icon: 'Search',
+                  enabled: true,
+                  createdAt: Date.now()
+              },
+              {
+                  id: 'baidu',
+                  name: '百度',
+                  url: 'https://www.baidu.com/s?wd={query}',
+                  icon: 'Globe',
+                  enabled: true,
+                  createdAt: Date.now()
+              },
+              {
+                  id: 'sogou',
+                  name: '搜狗',
+                  url: 'https://www.sogou.com/web?query={query}',
+                  icon: 'Globe',
+                  enabled: true,
+                  createdAt: Date.now()
+              },
+              {
+                  id: 'yandex',
+                  name: 'Yandex',
+                  url: 'https://yandex.com/search/?text={query}',
+                  icon: 'Globe',
+                  enabled: true,
+                  createdAt: Date.now()
+              },
+              {
+                  id: 'github',
+                  name: 'GitHub',
+                  url: 'https://github.com/search?q={query}',
+                  icon: 'Github',
+                  enabled: true,
+                  createdAt: Date.now()
+              },
+              {
+                  id: 'linuxdo',
+                  name: 'Linux.do',
+                  url: 'https://linux.do/search?q={query}',
+                  icon: 'Terminal',
+                  enabled: true,
+                  createdAt: Date.now()
+              },
+              {
+                  id: 'bilibili',
+                  name: 'B站',
+                  url: 'https://search.bilibili.com/all?keyword={query}',
+                  icon: 'Play',
+                  enabled: true,
+                  createdAt: Date.now()
+              },
+              {
+                  id: 'youtube',
+                  name: 'YouTube',
+                  url: 'https://www.youtube.com/results?search_query={query}',
+                  icon: 'Video',
+                  enabled: true,
+                  createdAt: Date.now()
+              },
+              {
+                  id: 'wikipedia',
+                  name: '维基',
+                  url: 'https://zh.wikipedia.org/wiki/Special:Search?search={query}',
+                  icon: 'BookOpen',
+                  enabled: true,
+                  createdAt: Date.now()
+              }
+          ];
+          
+          // 保存默认搜索源到状态和KV空间
+          handleSaveSearchConfig(defaultSources, mode);
+      } else {
+          handleSaveSearchConfig(externalSearchSources, mode);
+      }
+  };
+
+  const handleExternalSearch = () => {
+      if (searchQuery.trim() && searchMode === 'external') {
+          // 如果搜索源列表为空，自动加载默认搜索源
+          if (externalSearchSources.length === 0) {
+              const defaultSources: ExternalSearchSource[] = [
+                  {
+                      id: 'bing',
+                      name: '必应',
+                      url: 'https://www.bing.com/search?q={query}',
+                      icon: 'Search',
+                      enabled: true,
+                      createdAt: Date.now()
+                  },
+                  {
+                      id: 'google',
+                      name: 'Google',
+                      url: 'https://www.google.com/search?q={query}',
+                      icon: 'Search',
+                      enabled: true,
+                      createdAt: Date.now()
+                  },
+                  {
+                      id: 'baidu',
+                      name: '百度',
+                      url: 'https://www.baidu.com/s?wd={query}',
+                      icon: 'Globe',
+                      enabled: true,
+                      createdAt: Date.now()
+                  },
+                  {
+                      id: 'sogou',
+                      name: '搜狗',
+                      url: 'https://www.sogou.com/web?query={query}',
+                      icon: 'Globe',
+                      enabled: true,
+                      createdAt: Date.now()
+                  },
+                  {
+                      id: 'yandex',
+                      name: 'Yandex',
+                      url: 'https://yandex.com/search/?text={query}',
+                      icon: 'Globe',
+                      enabled: true,
+                      createdAt: Date.now()
+                  },
+                  {
+                      id: 'github',
+                      name: 'GitHub',
+                      url: 'https://github.com/search?q={query}',
+                      icon: 'Github',
+                      enabled: true,
+                      createdAt: Date.now()
+                  },
+                  {
+                      id: 'linuxdo',
+                      name: 'Linux.do',
+                      url: 'https://linux.do/search?q={query}',
+                      icon: 'Terminal',
+                      enabled: true,
+                      createdAt: Date.now()
+                  },
+                  {
+                      id: 'bilibili',
+                      name: 'B站',
+                      url: 'https://search.bilibili.com/all?keyword={query}',
+                      icon: 'Play',
+                      enabled: true,
+                      createdAt: Date.now()
+                  },
+                  {
+                      id: 'youtube',
+                      name: 'YouTube',
+                      url: 'https://www.youtube.com/results?search_query={query}',
+                      icon: 'Video',
+                      enabled: true,
+                      createdAt: Date.now()
+                  },
+                  {
+                      id: 'wikipedia',
+                      name: '维基',
+                      url: 'https://zh.wikipedia.org/wiki/Special:Search?search={query}',
+                      icon: 'BookOpen',
+                      enabled: true,
+                      createdAt: Date.now()
+                  }
+              ];
+              
+              // 保存默认搜索源到状态和KV空间
+              handleSaveSearchConfig(defaultSources, 'external');
+              
+              // 使用第一个默认搜索源立即执行搜索
+              const searchUrl = defaultSources[0].url.replace('{query}', encodeURIComponent(searchQuery));
+              window.open(searchUrl, '_blank');
+              return;
+          }
+          
+          // 如果有选中的搜索源，使用选中的搜索源；否则使用第一个启用的搜索源
+          let source = selectedSearchSource;
+          if (!source) {
+              const enabledSources = externalSearchSources.filter(s => s.enabled);
+              if (enabledSources.length > 0) {
+                  source = enabledSources[0];
+              }
+          }
+          
+          if (source) {
+              const searchUrl = source.url.replace('{query}', encodeURIComponent(searchQuery));
+              window.open(searchUrl, '_blank');
+          }
+      }
+  };
+
   const handleRestoreBackup = (restoredLinks: LinkItem[], restoredCategories: Category[]) => {
       updateData(restoredLinks, restoredCategories);
       setIsBackupModalOpen(false);
+  };
+
+  const handleRestoreSearchConfig = (restoredSearchConfig: SearchConfig) => {
+      handleSaveSearchConfig(restoredSearchConfig.externalSources, restoredSearchConfig.mode);
   };
 
   // --- Filtering & Memo ---
@@ -1332,6 +1943,10 @@ function App() {
         onRestore={handleRestoreBackup}
         webDavConfig={webDavConfig}
         onSaveWebDavConfig={handleSaveWebDavConfig}
+        searchConfig={{ mode: searchMode, externalSources: externalSearchSources }}
+        onRestoreSearchConfig={handleRestoreSearchConfig}
+        aiConfig={aiConfig}
+        onRestoreAIConfig={handleRestoreAIConfig}
       />
 
       <ImportModal
@@ -1340,6 +1955,8 @@ function App() {
         existingLinks={links}
         categories={categories}
         onImport={handleImportConfirm}
+        onImportSearchConfig={handleRestoreSearchConfig}
+        onImportAIConfig={handleRestoreAIConfig}
       />
 
       <SettingsModal
@@ -1349,6 +1966,13 @@ function App() {
         onSave={handleSaveAIConfig}
         links={links}
         onUpdateLinks={(newLinks) => updateData(newLinks, categories)}
+      />
+
+      <SearchConfigModal
+        isOpen={isSearchConfigModalOpen}
+        onClose={() => setIsSearchConfigModalOpen(false)}
+        sources={externalSearchSources}
+        onSave={(sources) => handleSaveSearchConfig(sources, searchMode)}
       />
 
       {/* Sidebar Mobile Overlay */}
@@ -1469,7 +2093,7 @@ function App() {
                  title="Fork this project on GitHub"
                >
                  <GitFork size={14} />
-                 <span>Fork 项目 v1.4</span>
+                 <span>Fork 项目 v1.5</span>
                </a>
             </div>
         </div>
@@ -1485,15 +2109,138 @@ function App() {
               <Menu size={24} />
             </button>
 
-            <div className="relative w-full max-w-md hidden sm:block">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-              <input
-                type="text"
-                placeholder="搜索..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 rounded-full bg-slate-100 dark:bg-slate-700/50 border-none text-sm focus:ring-2 focus:ring-blue-500 dark:text-white placeholder-slate-400 outline-none transition-all"
-              />
+            {/* 搜索模式切换 + 搜索框 */}
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              {/* 搜索模式切换 */}
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex items-center bg-slate-100 dark:bg-slate-700 rounded-full p-1">
+                  <button
+                    onClick={() => handleSearchModeChange('internal')}
+                    className={`px-3 py-1 text-xs font-medium rounded-full transition-all flex items-center justify-center min-h-[24px] min-w-[40px] ${
+                      searchMode === 'internal'
+                        ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-sm'
+                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-800 dark:hover:text-slate-100'
+                    }`}
+                    title="站内搜索"
+                  >
+                    站内
+                  </button>
+                  <button
+                    onClick={() => handleSearchModeChange('external')}
+                    className={`px-3 py-1 text-xs font-medium rounded-full transition-all flex items-center justify-center min-h-[24px] min-w-[40px] ${
+                      searchMode === 'external'
+                        ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-sm'
+                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-800 dark:hover:text-slate-100'
+                    }`}
+                    title="站外搜索"
+                  >
+                    站外
+                  </button>
+                </div>
+                
+                {/* 搜索配置管理按钮 */}
+                {searchMode === 'external' && (
+                  <button
+                    onClick={() => setIsSearchConfigModalOpen(true)}
+                    className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-colors"
+                    title="管理搜索源"
+                  >
+                    <Settings size={14} />
+                  </button>
+                )}
+              </div>
+
+              {/* 搜索框 */}
+              <div className="relative w-full max-w-lg hidden sm:block">
+                {/* 搜索源选择弹出窗口 */}
+                {searchMode === 'external' && showSearchSourcePopup && (
+                  <div 
+                    className="absolute left-0 top-full mt-2 w-full bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 p-3 z-50"
+                    onMouseEnter={() => setIsPopupHovered(true)}
+                    onMouseLeave={() => setIsPopupHovered(false)}
+                  >
+                    <div className="grid grid-cols-5 gap-2">
+                      {externalSearchSources
+                        .filter(source => source.enabled)
+                        .map((source, index) => (
+                          <button
+                            key={index}
+                            onClick={() => handleSearchSourceSelect(source)}
+                            onMouseEnter={() => setHoveredSearchSource(source)}
+                            onMouseLeave={() => setHoveredSearchSource(null)}
+                            className="px-2 py-2 text-sm rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 flex items-center gap-1"
+                          >
+                            <img 
+                              src={`https://www.faviconextractor.com/favicon/${new URL(source.url).hostname}?larger=true`}
+                              alt={source.name}
+                              className="w-4 h-4"
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement;
+                                target.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGNsYXNzPSJsdWNpZGUgbHVjaWRlLXNlYXJjaCI+PHBhdGggZD0ibTIxIDIxLTQuMzQtNC4zNCI+PC9wYXRoPjxjaXJjbGUgY3g9IjExIiBjeT0iMTEiIHI9IjgiPjwvY2lyY2xlPjwvc3ZnPg==';
+                              }}
+                            />
+                            <span className="truncate">{source.name}</span>
+                          </button>
+                        ))}
+                    </div>
+                  </div>
+                )}
+                
+                {/* 搜索图标 */}
+                <div 
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 cursor-pointer"
+                  onMouseEnter={() => searchMode === 'external' && setIsIconHovered(true)}
+                  onMouseLeave={() => setIsIconHovered(false)}
+                >
+                  {searchMode === 'internal' ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-search">
+                      <path d="m21 21-4.35-4.35"></path>
+                      <circle cx="11" cy="11" r="8"></circle>
+                    </svg>
+                  ) : (hoveredSearchSource || selectedSearchSource) ? (
+                    <img 
+                      src={`https://www.faviconextractor.com/favicon/${new URL((hoveredSearchSource || selectedSearchSource).url).hostname}?larger=true`}
+                      alt={(hoveredSearchSource || selectedSearchSource).name}
+                      className="w-4 h-4"
+                      onError={(e) => {
+                        const target = e.target as HTMLImageElement;
+                        target.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGNsYXNzPSJsdWNpZGUgbHVjaWRlLXNlYXJjaCI+PHBhdGggZD0ibTIxIDIxLTQuMzQtNC4zNCI+PC9wYXRoPjxjaXJjbGUgY3g9IjExIiBjeT0iMTEiIHI9IjgiPjwvY2lyY2xlPjwvc3ZnPg==';
+                      }}
+                    />
+                  ) : (
+                    <Search size={16} />
+                  )}
+                </div>
+                
+                <input
+                  type="text"
+                  placeholder={
+                    searchMode === 'internal' 
+                      ? "搜索站内内容..." 
+                      : selectedSearchSource 
+                        ? `在${selectedSearchSource.name}搜索内容` 
+                        : "搜索站外内容..."
+                  }
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && searchMode === 'external') {
+                      handleExternalSearch();
+                    }
+                  }}
+                  className="w-full pl-9 pr-4 py-2 rounded-full bg-slate-100 dark:bg-slate-700/50 border-none text-sm focus:ring-2 focus:ring-blue-500 dark:text-white placeholder-slate-400 outline-none transition-all"
+                />
+                
+                {searchMode === 'external' && searchQuery.trim() && (
+                  <button
+                    onClick={handleExternalSearch}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-blue-500"
+                    title="执行站外搜索"
+                  >
+                    <ExternalLink size={14} />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 

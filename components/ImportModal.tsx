@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { X, Upload, FileText, ArrowRight, Check, AlertCircle, FolderInput, ListTree, Database } from 'lucide-react';
-import { Category, LinkItem } from '../types';
+import { Category, LinkItem, SearchConfig, AIConfig } from '../types';
 import { parseBookmarks } from '../services/bookmarkParser';
 
 interface ImportModalProps {
@@ -9,6 +9,8 @@ interface ImportModalProps {
   existingLinks: LinkItem[];
   categories: Category[];
   onImport: (newLinks: LinkItem[], newCategories: Category[]) => void;
+  onImportSearchConfig?: (searchConfig: SearchConfig) => void;
+  onImportAIConfig?: (aiConfig: AIConfig) => void;
 }
 
 const ImportModal: React.FC<ImportModalProps> = ({ 
@@ -16,7 +18,9 @@ const ImportModal: React.FC<ImportModalProps> = ({
   onClose, 
   existingLinks, 
   categories, 
-  onImport 
+  onImport,
+  onImportSearchConfig,
+  onImportAIConfig
 }) => {
   const [step, setStep] = useState<'upload' | 'preview'>('upload');
   const [file, setFile] = useState<File | null>(null);
@@ -30,6 +34,8 @@ const ImportModal: React.FC<ImportModalProps> = ({
   // Staging Data
   const [parsedLinks, setParsedLinks] = useState<LinkItem[]>([]);
   const [parsedCategories, setParsedCategories] = useState<Category[]>([]);
+  const [parsedSearchConfig, setParsedSearchConfig] = useState<SearchConfig | null>(null);
+  const [parsedAIConfig, setParsedAIConfig] = useState<AIConfig | null>(null);
   
   // Options
   const [importMode, setImportMode] = useState<'original' | 'merge'>('original');
@@ -40,7 +46,7 @@ const ImportModal: React.FC<ImportModalProps> = ({
   const jsonFileInputRef = useRef<HTMLInputElement>(null);
 
   // Parse JSON backup file
-  const parseJsonBackup = async (file: File): Promise<{ links: LinkItem[], categories: Category[] }> => {
+  const parseJsonBackup = async (file: File): Promise<{ links: LinkItem[], categories: Category[], searchConfig?: SearchConfig, aiConfig?: AIConfig }> => {
     const text = await file.text();
     const data = JSON.parse(text);
     
@@ -49,7 +55,12 @@ const ImportModal: React.FC<ImportModalProps> = ({
       throw new Error('Invalid backup file format');
     }
     
-    return data;
+    return {
+      links: data.links,
+      categories: data.categories,
+      searchConfig: data.searchConfig,
+      aiConfig: data.aiConfig
+    };
   };
 
   if (!isOpen) return null;
@@ -59,6 +70,8 @@ const ImportModal: React.FC<ImportModalProps> = ({
     setFile(null);
     setParsedLinks([]);
     setParsedCategories([]);
+    setParsedSearchConfig(null);
+    setParsedAIConfig(null);
     setNewLinksCount(0);
     setDuplicateCount(0);
     setNewCategoriesCount(0);
@@ -79,7 +92,7 @@ const ImportModal: React.FC<ImportModalProps> = ({
     setImportType(type);
 
     try {
-        let result: { links: LinkItem[], categories: Category[] };
+        let result: { links: LinkItem[], categories: Category[], searchConfig?: SearchConfig, aiConfig?: AIConfig };
         
         if (type === 'html') {
             result = await parseBookmarks(selectedFile);
@@ -108,6 +121,8 @@ const ImportModal: React.FC<ImportModalProps> = ({
 
         setParsedLinks(uniqueNewLinks);
         setParsedCategories(uniqueNewCategories);
+        setParsedSearchConfig(result.searchConfig || null);
+        setParsedAIConfig(result.aiConfig || null);
         setNewLinksCount(uniqueNewLinks.length);
         setDuplicateCount(duplicates);
         setNewCategoriesCount(uniqueNewCategories.length);
@@ -175,6 +190,17 @@ const ImportModal: React.FC<ImportModalProps> = ({
       }
 
       onImport(finalLinks, finalCategories);
+      
+      // Import search config if available
+      if (parsedSearchConfig && onImportSearchConfig) {
+          onImportSearchConfig(parsedSearchConfig);
+      }
+      
+      // Import AI config if available
+      if (parsedAIConfig && onImportAIConfig) {
+          onImportAIConfig(parsedAIConfig);
+      }
+      
       handleClose();
   };
 

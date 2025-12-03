@@ -45,6 +45,14 @@ export const onRequestGet = async (context: { env: Env; request: Request }) => {
       });
     }
     
+    // 如果是获取搜索配置请求
+    if (getConfig === 'search') {
+      const searchConfig = await env.CLOUDNAV_KV.get('search_config');
+      return new Response(searchConfig || '{}', {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      });
+    }
+    
     // 如果是获取图标请求
     if (getConfig === 'favicon') {
       const domain = url.searchParams.get('domain');
@@ -125,6 +133,14 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
     // 如果是保存AI配置
     if (body.saveConfig === 'ai') {
       await env.CLOUDNAV_KV.put('ai_config', JSON.stringify(body.config));
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      });
+    }
+    
+    // 如果是保存搜索配置
+    if (body.saveConfig === 'search') {
+      await env.CLOUDNAV_KV.put('search_config', JSON.stringify(body.config));
       return new Response(JSON.stringify({ success: true }), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });

@@ -42,6 +42,25 @@ export interface AIConfig {
   navigationName?: string;
 }
 
+// 搜索模式类型
+export type SearchMode = 'internal' | 'external';
+
+// 外部搜索源配置
+export interface ExternalSearchSource {
+  id: string;
+  name: string;
+  url: string;
+  icon?: string;
+  enabled: boolean;
+  createdAt: number;
+}
+
+// 搜索配置
+export interface SearchConfig {
+  mode: SearchMode;
+  externalSources: ExternalSearchSource[];
+}
+
 export const DEFAULT_CATEGORIES: Category[] = [
   { id: 'common', name: '常用推荐', icon: 'Star' },
   { id: 'dev', name: '开发工具', icon: 'Code' },
